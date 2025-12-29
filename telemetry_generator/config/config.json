@@ -1,0 +1,13 @@
+{ 
+    "switches": {
+        "count": 4
+    },
+    "metrics": [
+        "bandwidth_mbps",
+        "latency_ms",
+        "packet_errors",
+         "link_status",
+        "tx_queue_depth",
+        "utilization_percent"
+    ]
+}
