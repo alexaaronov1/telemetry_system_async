@@ -190,7 +190,7 @@ uvicorn metrics_server.app:app --host 127.0.0.1 --port 8080
 
 ## Limitations
 
-* Telemetry data is stored only in memory
+* In-memory storage
 * Only the latest snapshot is retained (no history)
 * Each server instance maintains its own state
 * No persistence across restarts
