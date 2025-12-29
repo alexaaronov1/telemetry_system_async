@@ -1,120 +1,91 @@
-# Telemetry Aggregation System (Async / FastAPI)
+# Telemetry Aggregation System
 
 ## Overview
 
-This project implements a **production-oriented network telemetry aggregation system**, inspired by NVIDIA UFM.
+This project implements a telemetry aggregation system inspired by NVIDIA UFM.
 
-The system continuously ingests telemetry metrics from a set of simulated fabric switches and serves the **latest aggregated snapshot** via a REST API.
-The design is **async-first**, **non-blocking**, and suitable for handling **many concurrent clients**.
+The system simulates telemetry metrics collected from a set of fabric switches, continuously ingests the data, stores the latest snapshot in memory, and exposes it through a REST API. Telemetry data is updated periodically and can be queried in real time by clients.
 
-The solution is intentionally lightweight but demonstrates correct architectural reasoning around **ingestion pipelines, data freshness, concurrency, and failure isolation**.
-
----
-
-## High-Level Architecture
-
-The system consists of **two decoupled components**:
-
-1. **Telemetry Generator** – simulates switches and exposes raw telemetry data.
-2. **Metrics Server** – ingests telemetry asynchronously and serves it via a REST API.
-
-```
-Telemetry Generator  ──►  Async Ingestion Pipeline  ──►  In-Memory Snapshot  ──►  REST API
-        (CSV)                    (background task)          (async-safe)        (FastAPI)
-```
-
-Telemetry ingestion runs **continuously and independently of client requests**.
+The implementation focuses on clear separation between telemetry generation, ingestion, data handling, and REST server integration.
 
 ---
 
-## Telemetry Generator
+## System Architecture
 
-### Purpose
+The system is composed of two independent services:
 
-The telemetry generator simulates fabric switches producing telemetry metrics.
-It represents an **external dependency** from the perspective of the metrics server.
+1. **Telemetry Generator**
+2. **Metrics Server**
 
-### Behavior
+The telemetry generator simulates switches and exposes telemetry data over HTTP.
+The metrics server periodically fetches this data, processes it, and serves it to clients via REST endpoints.
 
-* Generates telemetry for a configurable number of switches.
-* Simulates realistic behavior:
+```
+Telemetry Generator ──(CSV over HTTP)──► Metrics Server ──► REST API
+```
 
-  * bandwidth usage
-  * latency spikes
-  * packet errors
-  * link down scenarios
-* Updates telemetry periodically (default: every 10 seconds).
+---
 
-### Interface
+## Telemetry Generation
+
+The telemetry generator simulates a configurable number of network switches. Each switch periodically produces telemetry metrics such as bandwidth usage, latency, packet errors, and link-related indicators.
+
+### System Operation
+
+* Telemetry values are generated in memory at a fixed interval (default: 10 seconds)
+* Metrics include simulated variability, such as latency spikes and occasional errors
+* The generator maintains the latest telemetry values per switch
+
+### Telemetry API
 
 ```
 GET /counters
 ```
 
-Returns telemetry data as a **CSV matrix**:
+The endpoint returns a CSV matrix where:
 
-* Rows represent switches
-* Columns represent metrics
+* Each row represents a switch
+* Each column represents a telemetry metric
 
-### Notes
-
-* The generator runs independently of client traffic.
-* It is intentionally kept simple and unchanged between versions.
-* Async concerns are handled entirely by the consumer (metrics server).
+This endpoint is consumed by the metrics server ingestion pipeline.
 
 ---
 
-## Metrics Server (Core System)
+## Metrics Server
 
-The metrics server is the **production-facing component**.
+The metrics server is responsible for ingesting telemetry data, maintaining the latest aggregated snapshot, and serving this data through a REST API.
 
-### Key Design Goals
+### System Operation
 
-* Non-blocking request handling
-* Continuous ingestion independent of API traffic
-* Safe shared state under concurrency
-* Predictable behavior under load
-* Clear lifecycle management
+* At startup, the server launches an asynchronous ingestion task
+* The ingestion task periodically fetches telemetry data from the generator
+* Incoming CSV data is parsed and stored as an in-memory snapshot
+* API requests read from the latest snapshot without triggering ingestion
 
----
-
-## Async Ingestion Pipeline
-
-* Runs as an **async background task**.
-* Started at application startup using **FastAPI lifespan events**.
-* Uses `httpx.AsyncClient` for non-blocking HTTP I/O.
-* Applies explicit timeouts.
-* Polls the telemetry generator at a fixed interval.
-
-### Key Properties
-
-* Ingestion is **not request-driven**.
-* Failures in ingestion do **not** impact API availability.
-* The system always serves the **latest successfully ingested snapshot**.
+Telemetry ingestion runs independently of client requests.
 
 ---
 
-## In-Memory Storage
+## Data Handling and Storage
 
-* Stores only the **latest telemetry snapshot**.
-* Protected by an explicit `asyncio.Lock`.
-* Ensures consistency under concurrent async access.
+Telemetry data is stored in memory as a snapshot representing the most recent state of all switches.
 
-### Concurrency Model
+### Data flow
 
-* **Writes**: performed by the ingestion task.
-* **Reads**: performed by API handlers.
-* Both use async locking for correctness and clarity.
+1. CSV telemetry is fetched from the generator
+2. Values are parsed and converted into structured data
+3. The entire snapshot is replaced atomically
+4. API handlers read the current snapshot
 
-This design favors **correctness and explicit intent** over micro-optimizations.
+Only the latest telemetry state is retained.
 
 ---
 
 ## REST API
 
-### Endpoints
+The metrics server exposes the following REST endpoints:
 
-#### GetMetric
+### GetMetric
 
 ```
 GET /telemetry/GetMetric?switch=<switch_id>&metric=<metric_name>
@@ -122,7 +93,7 @@ GET /telemetry/GetMetric?switch=<switch_id>&metric=<metric_name>
 
 Returns the current value of a specific metric for a specific switch.
 
-#### ListMetrics
+### ListMetrics
 
 ```
 GET /telemetry/ListMetrics
@@ -130,120 +101,109 @@ GET /telemetry/ListMetrics
 
 Returns the full telemetry snapshot for all switches.
 
-### Characteristics
+---
 
-* Fully asynchronous endpoints.
-* No blocking I/O.
-* Constant-time in-memory reads.
-* Safe under high concurrency.
+## Configuration
+
+Each component has its own configuration file located under a dedicated `config/` directory.
+
+### Telemetry Generator Configuration
+
+Controls:
+
+* Number of switches
+* Supported telemetry metrics
+
+Example:
+
+```json
+{
+  "switches": { "count": 4 },
+  "metrics": [
+    "bandwidth_mbps",
+    "latency_ms",
+    "packet_errors"
+  ]
+}
+```
+
+### Metrics Server Configuration
+
+Controls:
+
+* Logging level
+
+Example:
+
+```json
+{
+  "logging": {
+    "level": "INFO"
+  }
+}
+```
+
+If configuration files are not present, default values are used.
+
+## Environment Variables
+
+Both the telemetry generator and the metrics server support configuration via environment variables to control runtime settings such as network binding.
+
+### Telemetry Generator
+
+* `GENERATOR_HOST` — Host address to bind the telemetry generator (default: `127.0.0.1`)
+* `GENERATOR_PORT` — Port to bind the telemetry generator (default: `9001`)
+
+### Metrics Server
+
+* `METRICS_SERVER_HOST` — Host address to bind the metrics server (default: `127.0.0.1`)
+* `METRICS_SERVER_PORT` — Port to bind the metrics server (default: `8080`)
+* `GENERATOR_HOST` — Host address of the telemetry generator (default: `127.0.0.1`)
+* `GENERATOR_PORT` — Port of the telemetry generator (default: `9001`)
+
+If environment variables are not set, default values are used.
 
 ---
 
 ## Observability
 
-Basic observability is implemented via FastAPI middleware:
-
-* Measures end-to-end request latency.
-* Logs request path, status code, and duration.
-* Uses standard Python logging.
-
-This satisfies observability requirements without introducing heavy dependencies.
-
----
-
-## Configuration
-
-### Environment Variables
-
-#### Metrics Server
-
-* `METRICS_SERVER_HOST` (default: `127.0.0.1`)
-* `METRICS_SERVER_PORT` (default: `8080`)
-* `GENERATOR_HOST` (default: `127.0.0.1`)
-* `GENERATOR_PORT` (default: `9001`)
-
-#### Telemetry Generator
-
-* `GENERATOR_PORT` (default: `9001`)
-* `GENERATOR_HOST` (optional)
-
-### Configuration Files
-
-* Generator config controls:
-
-  * number of switches
-  * supported metrics
-* Metrics server config controls:
-
-  * log level
-
-If configuration files are missing, **sane defaults are used**.
+Basic logging is implemented in the metrics server to provide visibility into system behavior.
+API request latency and ingestion activity are logged to help observe runtime behavior.
 
 ---
 
 ## Running the System
 
-### 1. Start the Telemetry Generator
+### Start the Telemetry Generator
 
 ```
 python telemetry_generator/server.py
 ```
 
-### 2. Start the Metrics Server
+### Start the Metrics Server
 
 ```
-uvicorn metrics_server.app:app --host 0.0.0.0 --port 8080
+uvicorn metrics_server.app:app --host 127.0.0.1 --port 8080
 ```
-
-For higher concurrency:
-
-```
-uvicorn metrics_server.app:app --workers 4
-```
-
----
-
-## Performance Characteristics
-
-* API requests are served from in-memory state.
-* No network calls on the request path.
-* Latency is stable and predictable.
-* Scales efficiently with concurrent clients.
-
----
-
-## Failure Modes and Isolation
-
-* Telemetry generator failure:
-
-  * ingestion logs errors
-  * API continues serving last snapshot
-* Slow generator:
-
-  * bounded by request timeout
-* High API load:
-
-  * ingestion unaffected
-
-Failures are intentionally **isolated by design**.
 
 ---
 
 ## Limitations
 
-* In-memory storage is per-process.
-* Each worker maintains its own snapshot.
-* No historical retention.
-* No persistence across restarts.
+* Telemetry data is stored only in memory
+* Only the latest snapshot is retained (no history)
+* Each server instance maintains its own state
+* No persistence across restarts
+* Scalability is limited by in-memory storage and per-process state
 
-These tradeoffs are intentional for simplicity.
+These tradeoffs were made to keep the implementation focused and simple.
 
 ---
 
-## Future Improvements
+## Possible Extensions
 
-* Shared external storage (Redis, database).
-* Historical metrics retention.
-* Push-based ingestion instead of polling.
-* Distributed ingestion pipelines.
-* Advanced observability (Prometheus, tracing).
+* Persist telemetry data to external storage
+* Add historical data retention
+* Support push-based telemetry ingestion
+* Introduce distributed or shared storage
+* Integrate external monitoring and metrics systems
